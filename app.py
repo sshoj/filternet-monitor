@@ -120,38 +120,24 @@ with tab2:
 # ==========================================
 with tab3:
     st.subheader("🎯 Outbound Traffic Measurements (OONI)")
-    st.write("Check if specific cloud providers and websites are being blocked inside Iran.")
+    st.write("This tab pulls live probe data from volunteers inside Iran attempting to connect to external websites and services.")
     
-    # 1. Add a Dropdown Menu for the user to select the target
-    target_domain = st.selectbox(
-        "Select Target Destination to Check:",
-        [
-            "All Recent Traffic (No Filter)", 
-            "microsoft.com", 
-            "aws.amazon.com", 
-            "azure.com", 
-            "github.com", 
-            "cloudflare.com",
-            "google.com"
-        ]
-    )
-
     @st.cache_data(ttl=600) 
-    def fetch_ooni_data(domain_filter):
+    def fetch_ooni_data():
         try:
-            # Base URL
             url = "https://api.ooni.io/api/v1/measurements?probe_cc=IR&test_name=web_connectivity&limit=100"
-            
-            # 2. If the user selected a specific domain, add it to the API query
-            if domain_filter != "All Recent Traffic (No Filter)":
-                url += f"&domain={domain_filter}"
-
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "Accept": "application/json"
             }
+            
             res = requests.get(url, headers=headers, timeout=15)
             
+            # Catch Cloudflare/WAF blocks
+            if res.status_code == 566 or res.status_code in [403, 503]:
+                st.warning("⚠️ OONI API blocked the request (Cloudflare WAF). This happens when hosting on shared cloud platforms like Streamlit. Loading sample OSINT data for demonstration.")
+                return generate_mock_ooni_data()
+                
             if res.status_code != 200:
                 st.error(f"API Error: {res.status_code}")
                 return pd.DataFrame()
@@ -175,9 +161,20 @@ with tab3:
             st.error(f"OONI Request Failed: {e}")
             return pd.DataFrame()
 
-    with st.spinner(f"Fetching live traffic data for {target_domain}..."):
-        # Pass the selected domain into the function
-        df_ooni = fetch_ooni_data(target_domain)
+    def generate_mock_ooni_data():
+        # Generates realistic sample data if the API blocks the cloud server
+        import datetime
+        now = datetime.datetime.utcnow()
+        return pd.DataFrame([
+            {"Timestamp (UTC)": (now - datetime.timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ"), "Target Destination": "https://cloudflare.com", "Internal Network (ASN)": "AS43754", "Status": "🚨 Confirmed Blocked"},
+            {"Timestamp (UTC)": (now - datetime.timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ"), "Target Destination": "https://whatsapp.com", "Internal Network (ASN)": "AS39501", "Status": "🚨 Confirmed Blocked"},
+            {"Timestamp (UTC)": (now - datetime.timedelta(minutes=12)).strftime("%Y-%m-%dT%H:%M:%SZ"), "Target Destination": "https://github.com", "Internal Network (ASN)": "AS43753", "Status": "⚠️ Anomalous / Throttled"},
+            {"Timestamp (UTC)": (now - datetime.timedelta(minutes=18)).strftime("%Y-%m-%dT%H:%M:%SZ"), "Target Destination": "https://digitalocean.com", "Internal Network (ASN)": "AS58224", "Status": "✅ Accessible"},
+            {"Timestamp (UTC)": (now - datetime.timedelta(minutes=22)).strftime("%Y-%m-%dT%H:%M:%SZ"), "Target Destination": "https://hetzner.com", "Internal Network (ASN)": "AS43754", "Status": "⚠️ Anomalous / Throttled"},
+        ])
+
+    with st.spinner("Fetching traffic measurements..."):
+        df_ooni = fetch_ooni_data()
         
     if not df_ooni.empty:
         col_a, col_b = st.columns(2)
@@ -188,5 +185,3 @@ with tab3:
             
         filtered_df = df_ooni[(df_ooni['Status'].isin(filter_status)) & (df_ooni['Internal Network (ASN)'].isin(filter_asn))]
         st.dataframe(filtered_df, use_container_width=True, hide_index=True)
-    elif target_domain != "All Recent Traffic (No Filter)":
-         st.info(f"No recent volunteer tests found for {target_domain} in the last 24 hours.")
