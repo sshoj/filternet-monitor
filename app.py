@@ -71,19 +71,25 @@ with tab1:
 # ==========================================
 with tab2:
     st.subheader("🔍 Active Iranian IPs Exposed to the Global Internet")
-    st.write("This tab queries Shodan to find individual, specific IP addresses located in Iran that are currently responding to external internet traffic. During a total shutdown, this reveals the exact whitelisted infrastructure.")
+    st.write("This tab queries Shodan to find individual, specific IP addresses located in Iran that are currently responding to external internet traffic.")
     
     if not shodan_api_key:
         st.warning("⚠️ Please enter your Shodan API Key in the sidebar to load this data.")
     else:
-        @st.cache_data(ttl=3600) # Cache for 1 hour to save Shodan API credits
+        @st.cache_data(ttl=3600) 
         def fetch_shodan_ips(api_key):
             try:
                 url = f"https://api.shodan.io/shodan/host/search?key={api_key}&query=country:IR&limit=100"
-                res = requests.get(url, timeout=15).json()
+                res = requests.get(url, timeout=15)
+                data = res.json()
+                
+                # Catch specific Shodan API errors (like Invalid Key)
+                if 'error' in data:
+                    st.error(f"Shodan API Rejected the Request: {data['error']}")
+                    return pd.DataFrame()
                 
                 hosts = []
-                for match in res.get('matches', []):
+                for match in data.get('matches', []):
                     hosts.append({
                         "IP Address": match.get('ip_str'),
                         "ISP / Organization": match.get('org', 'Unknown'),
@@ -93,7 +99,7 @@ with tab2:
                     })
                 return pd.DataFrame(hosts)
             except Exception as e:
-                st.error(f"Shodan API Error: {e}")
+                st.error(f"Network Error reaching Shodan: {e}")
                 return pd.DataFrame()
 
         with st.spinner("Scanning Shodan for active IR infrastructure..."):
@@ -103,11 +109,11 @@ with tab2:
             st.success(f"Successfully retrieved a sample of {len(df_shodan)} exposed IPs.")
             st.dataframe(df_shodan, use_container_width=True, hide_index=True)
             
-            # Show a breakdown of which ISPs these open IPs belong to
             st.subheader("Exposed IPs by ISP")
             isp_counts = df_shodan['ISP / Organization'].value_counts()
             st.bar_chart(isp_counts)
-
+        elif shodan_api_key:
+            st.info("No results returned. Check if the API key is correct and has available credits.")
 
 # ==========================================
 # TAB 3: DESTINATIONS (Traffic flow via OONI)
