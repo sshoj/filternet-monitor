@@ -79,7 +79,7 @@ with tab2:
         @st.cache_data(ttl=3600) 
         def fetch_shodan_ips(api_key):
             try:
-                url = f"https://api.shodan.io/shodan/host/search?key={api_key}&query=country:IR&limit=100"
+                url = f"https://api.shodan.io/shodan/host/search?key={api_key}&query=Iran&limit=100"
                 res = requests.get(url, timeout=15)
                 data = res.json()
                 
