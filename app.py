@@ -115,15 +115,27 @@ with tab2:
         elif shodan_api_key:
             st.info("No results returned. Check if the API key is correct and has available credits.")
 
-import ipaddress # Make sure this is at the top of your file!
+import ipaddress # Ensure this is at the top of your file!
 
 # ==========================================
 # TAB 3: DESTINATIONS & CIDR TRACKING (OONI)
 # ==========================================
 with tab3:
     st.subheader("🎯 Outbound Traffic & Cloud IP Tracker (OONI)")
-    st.write("Track specific domains or scan recent traffic to see if entire Cloud subnets (AWS/Azure) are being blocked.")
+    st.write("Track specific domains or scan recent traffic to see if entire Cloud subnets are being whitelisted or blocked.")
     
+    # --- 1. The new Cloudflare auto-fetch function ---
+    @st.cache_data(ttl=86400) # Cache for 24 hours
+    def get_cloudflare_ranges():
+        try:
+            res = requests.get("https://www.cloudflare.com/ips-v4", timeout=5)
+            if res.status_code == 200:
+                return res.text.strip().split('\n')
+        except:
+            pass
+        # Fallback if the request fails
+        return ["104.16.0.0/13", "104.24.0.0/14", "172.64.0.0/13", "103.21.244.0/22"]
+
     # Let the user choose what to track
     tracking_mode = st.radio("Select Tracking Mode:", ["Domain Name", "Cloud IP Range (CIDR)"], horizontal=True)
 
@@ -133,24 +145,33 @@ with tab3:
             ["All Recent Traffic", "microsoft.com", "aws.amazon.com", "azure.com", "github.com", "cloudflare.com"]
         )
     else:
-        # Provide a default AWS Frankfurt subnet as an example
-        target_input = st.text_input("Enter IP or CIDR Range (e.g., 3.120.0.0/14 for AWS Frankfurt):", "3.120.0.0/14")
+        # --- 2. The new UI for selecting Cloudflare IPs ---
+        cf_ips = get_cloudflare_ranges()
+        
+        # Add a dropdown that contains all Cloudflare IPs + a Custom option
+        ip_options = ["Custom Input (Type your own)"] + [f"{ip} (Cloudflare)" for ip in cf_ips]
+        
+        selected_ip_mode = st.selectbox("Select a Live Cloudflare Range, or type a custom CIDR:", ip_options)
+        
+        if selected_ip_mode == "Custom Input (Type your own)":
+            target_input = st.text_input("Enter custom IP or CIDR Range (e.g., 3.120.0.0/14 for AWS):", "3.120.0.0/14")
+        else:
+            # Strip the " (Cloudflare)" tag off the end before searching
+            target_input = selected_ip_mode.split(" ")[0]
 
+    # --- 3. The Core Search Function ---
     @st.cache_data(ttl=600) 
     def fetch_ooni_data(mode, target):
         try:
-            # If searching for IPs, tcp_connect is better because circumvention tools ping raw IPs
             test_type = "tcp_connect" if mode == "Cloud IP Range (CIDR)" else "web_connectivity"
-            url = f"https://api.ooni.io/api/v1/measurements?probe_cc=IR&test_name={test_type}&limit=300"
             
+            # Note: We are still using the proxy here to avoid the Cloudflare WAF block!
+            target_url = f"https://api.ooni.io/api/v1/measurements?probe_cc=IR&test_name={test_type}&limit=300"
             if mode == "Domain Name" and target != "All Recent Traffic":
-                url += f"&domain={target}"
+                target_url += f"&domain={target}"
 
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-                "Accept": "application/json"
-            }
-            res = requests.get(url, headers=headers, timeout=20)
+            url = f"https://corsproxy.io/?{target_url}"
+            res = requests.get(url, timeout=20)
             
             if res.status_code != 200:
                 st.error(f"API Error: {res.status_code}")
@@ -159,28 +180,25 @@ with tab3:
             data = res.json()
             measurements = []
             
-            # Setup CIDR checking if in IP mode
             target_network = None
             if mode == "Cloud IP Range (CIDR)":
                 try:
                     target_network = ipaddress.ip_network(target.strip(), strict=False)
                 except ValueError:
-                    st.error("Invalid CIDR format. Please use formats like 1.1.1.1 or 18.100.0.0/16")
+                    st.error("Invalid CIDR format.")
                     return pd.DataFrame()
 
             for item in data.get('results', []):
-                # Clean up the input to extract just the IP or Domain
                 raw_input = item.get('input', '')
                 clean_input = raw_input.replace('https://', '').replace('http://', '').split(':')[0]
                 
-                # If we are in CIDR mode, check if the tested IP falls inside the target subnet
                 if mode == "Cloud IP Range (CIDR)":
                     try:
                         ip_obj = ipaddress.ip_address(clean_input)
                         if ip_obj not in target_network:
-                            continue # Skip this result, it's not in the AWS/Azure range
+                            continue 
                     except ValueError:
-                        continue # Skip if the input wasn't a valid raw IP
+                        continue 
 
                 status = "✅ Accessible"
                 if item.get('anomaly'): status = "⚠️ Anomalous / Throttled"
@@ -213,6 +231,6 @@ with tab3:
         st.dataframe(filtered_df, use_container_width=True, hide_index=True)
     else:
         if tracking_mode == "Cloud IP Range (CIDR)":
-            st.info(f"No recent volunteer tests found targeting the specific subnet {target_input} in the last 24 hours. (This is common for highly specific IP ranges).")
+            st.info(f"No recent volunteer tests found targeting the specific subnet {target_input} in the last 24 hours. Try a different Cloudflare range from the dropdown.")
         else:
             st.info(f"No data found for {target_input}.")
