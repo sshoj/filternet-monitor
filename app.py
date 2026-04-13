@@ -115,68 +115,94 @@ with tab2:
         elif shodan_api_key:
             st.info("No results returned. Check if the API key is correct and has available credits.")
 
+import ipaddress # Make sure this is at the top of your file!
+
 # ==========================================
-# TAB 3: DESTINATIONS (Traffic flow via OONI)
+# TAB 3: DESTINATIONS & CIDR TRACKING (OONI)
 # ==========================================
 with tab3:
-    st.subheader("🎯 Outbound Traffic Measurements (OONI)")
-    st.write("This tab pulls live probe data from volunteers inside Iran attempting to connect to external websites and services.")
+    st.subheader("🎯 Outbound Traffic & Cloud IP Tracker (OONI)")
+    st.write("Track specific domains or scan recent traffic to see if entire Cloud subnets (AWS/Azure) are being blocked.")
     
+    # Let the user choose what to track
+    tracking_mode = st.radio("Select Tracking Mode:", ["Domain Name", "Cloud IP Range (CIDR)"], horizontal=True)
+
+    if tracking_mode == "Domain Name":
+        target_input = st.selectbox(
+            "Select Target Domain:",
+            ["All Recent Traffic", "microsoft.com", "aws.amazon.com", "azure.com", "github.com", "cloudflare.com"]
+        )
+    else:
+        # Provide a default AWS Frankfurt subnet as an example
+        target_input = st.text_input("Enter IP or CIDR Range (e.g., 3.120.0.0/14 for AWS Frankfurt):", "3.120.0.0/14")
+
     @st.cache_data(ttl=600) 
-    def fetch_ooni_data():
+    def fetch_ooni_data(mode, target):
         try:
-            url = "https://api.ooni.io/api/v1/measurements?probe_cc=IR&test_name=web_connectivity&limit=100"
+            # If searching for IPs, tcp_connect is better because circumvention tools ping raw IPs
+            test_type = "tcp_connect" if mode == "Cloud IP Range (CIDR)" else "web_connectivity"
+            url = f"https://api.ooni.io/api/v1/measurements?probe_cc=IR&test_name={test_type}&limit=300"
+            
+            if mode == "Domain Name" and target != "All Recent Traffic":
+                url += f"&domain={target}"
+
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
                 "Accept": "application/json"
             }
+            res = requests.get(url, headers=headers, timeout=20)
             
-            res = requests.get(url, headers=headers, timeout=15)
-            
-            # Catch Cloudflare/WAF blocks
-            if res.status_code == 566 or res.status_code in [403, 503]:
-                st.warning("⚠️ OONI API blocked the request (Cloudflare WAF). This happens when hosting on shared cloud platforms like Streamlit. Loading sample OSINT data for demonstration.")
-                return generate_mock_ooni_data()
-                
             if res.status_code != 200:
                 st.error(f"API Error: {res.status_code}")
                 return pd.DataFrame()
 
             data = res.json()
             measurements = []
+            
+            # Setup CIDR checking if in IP mode
+            target_network = None
+            if mode == "Cloud IP Range (CIDR)":
+                try:
+                    target_network = ipaddress.ip_network(target.strip(), strict=False)
+                except ValueError:
+                    st.error("Invalid CIDR format. Please use formats like 1.1.1.1 or 18.100.0.0/16")
+                    return pd.DataFrame()
+
             for item in data.get('results', []):
+                # Clean up the input to extract just the IP or Domain
+                raw_input = item.get('input', '')
+                clean_input = raw_input.replace('https://', '').replace('http://', '').split(':')[0]
+                
+                # If we are in CIDR mode, check if the tested IP falls inside the target subnet
+                if mode == "Cloud IP Range (CIDR)":
+                    try:
+                        ip_obj = ipaddress.ip_address(clean_input)
+                        if ip_obj not in target_network:
+                            continue # Skip this result, it's not in the AWS/Azure range
+                    except ValueError:
+                        continue # Skip if the input wasn't a valid raw IP
+
                 status = "✅ Accessible"
                 if item.get('anomaly'): status = "⚠️ Anomalous / Throttled"
                 if item.get('confirmed'): status = "🚨 Confirmed Blocked"
                     
                 measurements.append({
                     "Timestamp (UTC)": item.get('measurement_start_time'),
-                    "Target Destination": item.get('input'),
+                    "Target Destination": raw_input,
                     "Internal Network (ASN)": item.get('probe_asn'),
                     "Status": status
                 })
             return pd.DataFrame(measurements)
             
         except Exception as e:
-            st.error(f"OONI Request Failed: {e}")
+            st.error(f"Request Failed: {e}")
             return pd.DataFrame()
 
-    def generate_mock_ooni_data():
-        # Generates realistic sample data if the API blocks the cloud server
-        import datetime
-        now = datetime.datetime.utcnow()
-        return pd.DataFrame([
-            {"Timestamp (UTC)": (now - datetime.timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ"), "Target Destination": "https://cloudflare.com", "Internal Network (ASN)": "AS43754", "Status": "🚨 Confirmed Blocked"},
-            {"Timestamp (UTC)": (now - datetime.timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ"), "Target Destination": "https://whatsapp.com", "Internal Network (ASN)": "AS39501", "Status": "🚨 Confirmed Blocked"},
-            {"Timestamp (UTC)": (now - datetime.timedelta(minutes=12)).strftime("%Y-%m-%dT%H:%M:%SZ"), "Target Destination": "https://github.com", "Internal Network (ASN)": "AS43753", "Status": "⚠️ Anomalous / Throttled"},
-            {"Timestamp (UTC)": (now - datetime.timedelta(minutes=18)).strftime("%Y-%m-%dT%H:%M:%SZ"), "Target Destination": "https://digitalocean.com", "Internal Network (ASN)": "AS58224", "Status": "✅ Accessible"},
-            {"Timestamp (UTC)": (now - datetime.timedelta(minutes=22)).strftime("%Y-%m-%dT%H:%M:%SZ"), "Target Destination": "https://hetzner.com", "Internal Network (ASN)": "AS43754", "Status": "⚠️ Anomalous / Throttled"},
-        ])
-
-    with st.spinner("Fetching traffic measurements..."):
-        df_ooni = fetch_ooni_data()
+    with st.spinner(f"Analyzing network data for {target_input}..."):
+        df_ooni = fetch_ooni_data(tracking_mode, target_input)
         
     if not df_ooni.empty:
+        st.success(f"Found {len(df_ooni)} recent tests matching your criteria.")
         col_a, col_b = st.columns(2)
         with col_a:
             filter_status = st.multiselect("Filter by Status:", df_ooni['Status'].unique(), default=df_ooni['Status'].unique())
@@ -185,3 +211,8 @@ with tab3:
             
         filtered_df = df_ooni[(df_ooni['Status'].isin(filter_status)) & (df_ooni['Internal Network (ASN)'].isin(filter_asn))]
         st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+    else:
+        if tracking_mode == "Cloud IP Range (CIDR)":
+            st.info(f"No recent volunteer tests found targeting the specific subnet {target_input} in the last 24 hours. (This is common for highly specific IP ranges).")
+        else:
+            st.info(f"No data found for {target_input}.")
