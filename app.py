@@ -114,18 +114,31 @@ with tab2:
 # ==========================================
 with tab3:
     st.subheader("🎯 Outbound Traffic Measurements (OONI)")
-    st.write("This tab pulls live probe data from volunteers inside Iran attempting to connect to external websites and services, showing what is successfully bypassing the firewall and what is failing.")
+    st.write("This tab pulls live probe data from volunteers inside Iran attempting to connect to external websites and services.")
     
-    @st.cache_data(ttl=600) # Cache for 10 minutes
+    @st.cache_data(ttl=600) 
     def fetch_ooni_data():
         try:
-            # Fetch the latest 50 web connectivity tests from Iran
             url = "https://api.ooni.io/api/v1/measurements?probe_cc=IR&test_name=web_connectivity&limit=100"
-            res = requests.get(url, timeout=15).json()
+            
+            # 1. Add a User-Agent header to bypass basic bot protection
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            
+            res = requests.get(url, headers=headers, timeout=15)
+            
+            # 2. Check if the response is actually 200 OK before parsing JSON
+            if res.status_code != 200:
+                st.error(f"OONI API returned a non-200 status code: {res.status_code}")
+                # Print a small snippet of the text to help debug if it fails again
+                st.code(res.text[:200]) 
+                return pd.DataFrame()
+
+            data = res.json()
             
             measurements = []
-            for item in res.get('results', []):
-                # Determine status
+            for item in data.get('results', []):
                 status = "✅ Accessible"
                 if item.get('anomaly'):
                     status = "⚠️ Anomalous / Throttled"
@@ -139,15 +152,18 @@ with tab3:
                     "Status": status
                 })
             return pd.DataFrame(measurements)
+            
+        except ValueError:
+             st.error("OONI API Error: Received invalid JSON. The API might be undergoing maintenance.")
+             return pd.DataFrame()
         except Exception as e:
-            st.error(f"OONI API Error: {e}")
+            st.error(f"OONI Request Failed: {e}")
             return pd.DataFrame()
 
     with st.spinner("Fetching live traffic measurements from OONI..."):
         df_ooni = fetch_ooni_data()
         
     if not df_ooni.empty:
-        # Provide some filters for the data
         col_a, col_b = st.columns(2)
         with col_a:
             filter_status = st.multiselect("Filter by Status:", df_ooni['Status'].unique(), default=df_ooni['Status'].unique())
@@ -155,8 +171,4 @@ with tab3:
             filter_asn = st.multiselect("Filter by Origin ASN:", df_ooni['Internal Network (ASN)'].unique(), default=df_ooni['Internal Network (ASN)'].unique())
             
         filtered_df = df_ooni[(df_ooni['Status'].isin(filter_status)) & (df_ooni['Internal Network (ASN)'].isin(filter_asn))]
-        
         st.dataframe(filtered_df, use_container_width=True, hide_index=True)
-
-st.divider()
-st.caption("Developed using OSINT data. Updates automatically via Streamlit Community Cloud.")
