@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 import time
+import ipaddress
 
 st.set_page_config(page_title="Filternet Intelligence", layout="wide")
 
@@ -11,7 +12,7 @@ st.markdown("Monitoring BGP Routing, Active Exposed IPs, and Live Traffic Anomal
 # --- SIDEBAR FOR API KEYS ---
 with st.sidebar:
     st.header("⚙️ Configuration")
-    shodan_api_key = st.text_input("Shodan API Key (For Tab 2)", type="password", help="Get a free key from account.shodan.io")
+    shodan_api_key = st.text_input("Shodan API Key (For Tab 2)", type="password")
     st.markdown("---")
     st.markdown("**Data Sources:**\n* RIPEstat (BGP)\n* Shodan.io (Active IPs)\n* OONI.io (Traffic Measurements)")
 
@@ -19,7 +20,7 @@ with st.sidebar:
 tab1, tab2, tab3 = st.tabs(["🌐 BGP Monitor (Macro)", "🚗 Active IPs (Shodan)", "🎯 Destinations (OONI)"])
 
 # ==========================================
-# TAB 1: BGP ROUTE MONITOR (The Macro View)
+# TAB 1: BGP ROUTE MONITOR
 # ==========================================
 with tab1:
     ASN_GROUPS = {
@@ -38,7 +39,7 @@ with tab1:
                     response = requests.get(url, timeout=10).json()
                     prefix_count = len(response['data']['prefixes'])
                     results.append({"Category": category, "ASN": asn, "Provider": name, "Announced Prefixes": prefix_count})
-                    time.sleep(0.2) # Polite API delay
+                    time.sleep(0.2)
                 except:
                     pass
         return pd.DataFrame(results)
@@ -65,13 +66,11 @@ with tab1:
             else:
                 st.success("✅ Consumer routes are currently being announced.")
 
-
 # ==========================================
-# TAB 2: ACTIVE IPs (The "Cars" via Shodan)
+# TAB 2: ACTIVE IPs (Shodan)
 # ==========================================
 with tab2:
     st.subheader("🔍 Active Iranian IPs Exposed to the Global Internet")
-    st.write("This tab queries Shodan to find individual, specific IP addresses located in Iran that are currently responding to external internet traffic.")
     
     if not shodan_api_key:
         st.warning("⚠️ Please enter your Shodan API Key in the sidebar to load this data.")
@@ -79,11 +78,11 @@ with tab2:
         @st.cache_data(ttl=3600) 
         def fetch_shodan_ips(api_key):
             try:
+                # Using 'Iran' instead of 'country:IR' to bypass the free-tier restriction
                 url = f"https://api.shodan.io/shodan/host/search?key={api_key}&query=Iran&limit=100"
                 res = requests.get(url, timeout=15)
                 data = res.json()
                 
-                # Catch specific Shodan API errors (like Invalid Key)
                 if 'error' in data:
                     st.error(f"Shodan API Rejected the Request: {data['error']}")
                     return pd.DataFrame()
@@ -108,24 +107,14 @@ with tab2:
         if not df_shodan.empty:
             st.success(f"Successfully retrieved a sample of {len(df_shodan)} exposed IPs.")
             st.dataframe(df_shodan, use_container_width=True, hide_index=True)
-            
-            st.subheader("Exposed IPs by ISP")
-            isp_counts = df_shodan['ISP / Organization'].value_counts()
-            st.bar_chart(isp_counts)
-        elif shodan_api_key:
-            st.info("No results returned. Check if the API key is correct and has available credits.")
-
-import ipaddress # Ensure this is at the top of your file!
 
 # ==========================================
 # TAB 3: DESTINATIONS & CIDR TRACKING (OONI)
 # ==========================================
 with tab3:
     st.subheader("🎯 Outbound Traffic & Cloud IP Tracker (OONI)")
-    st.write("Track specific domains or scan recent traffic to see if entire Cloud subnets are being whitelisted or blocked.")
     
-    # --- 1. The new Cloudflare auto-fetch function ---
-    @st.cache_data(ttl=86400) # Cache for 24 hours
+    @st.cache_data(ttl=86400) 
     def get_cloudflare_ranges():
         try:
             res = requests.get("https://www.cloudflare.com/ips-v4", timeout=5)
@@ -133,10 +122,8 @@ with tab3:
                 return res.text.strip().split('\n')
         except:
             pass
-        # Fallback if the request fails
         return ["104.16.0.0/13", "104.24.0.0/14", "172.64.0.0/13", "103.21.244.0/22"]
 
-    # Let the user choose what to track
     tracking_mode = st.radio("Select Tracking Mode:", ["Domain Name", "Cloud IP Range (CIDR)"], horizontal=True)
 
     if tracking_mode == "Domain Name":
@@ -145,33 +132,30 @@ with tab3:
             ["All Recent Traffic", "microsoft.com", "aws.amazon.com", "azure.com", "github.com", "cloudflare.com"]
         )
     else:
-        # --- 2. The new UI for selecting Cloudflare IPs ---
         cf_ips = get_cloudflare_ranges()
-        
-        # Add a dropdown that contains all Cloudflare IPs + a Custom option
         ip_options = ["Custom Input (Type your own)"] + [f"{ip} (Cloudflare)" for ip in cf_ips]
-        
         selected_ip_mode = st.selectbox("Select a Live Cloudflare Range, or type a custom CIDR:", ip_options)
         
         if selected_ip_mode == "Custom Input (Type your own)":
             target_input = st.text_input("Enter custom IP or CIDR Range (e.g., 3.120.0.0/14 for AWS):", "3.120.0.0/14")
         else:
-            # Strip the " (Cloudflare)" tag off the end before searching
             target_input = selected_ip_mode.split(" ")[0]
 
-    # --- 3. The Core Search Function ---
     @st.cache_data(ttl=600) 
     def fetch_ooni_data(mode, target):
         try:
             test_type = "tcp_connect" if mode == "Cloud IP Range (CIDR)" else "web_connectivity"
             
-            # Note: We are still using the proxy here to avoid the Cloudflare WAF block!
-            target_url = f"https://api.ooni.io/api/v1/measurements?probe_cc=IR&test_name={test_type}&limit=300"
+            # DIRECT CALL for AWS - No Proxy Wrapper
+            url = f"https://api.ooni.io/api/v1/measurements?probe_cc=IR&test_name={test_type}&limit=300"
             if mode == "Domain Name" and target != "All Recent Traffic":
-                target_url += f"&domain={target}"
+                url += f"&domain={target}"
 
-            url = f"https://corsproxy.io/?{target_url}"
-            res = requests.get(url, timeout=20)
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                "Accept": "application/json"
+            }
+            res = requests.get(url, headers=headers, timeout=20)
             
             if res.status_code != 200:
                 st.error(f"API Error: {res.status_code}")
@@ -230,7 +214,4 @@ with tab3:
         filtered_df = df_ooni[(df_ooni['Status'].isin(filter_status)) & (df_ooni['Internal Network (ASN)'].isin(filter_asn))]
         st.dataframe(filtered_df, use_container_width=True, hide_index=True)
     else:
-        if tracking_mode == "Cloud IP Range (CIDR)":
-            st.info(f"No recent volunteer tests found targeting the specific subnet {target_input} in the last 24 hours. Try a different Cloudflare range from the dropdown.")
-        else:
-            st.info(f"No data found for {target_input}.")
+        st.info(f"No recent volunteer tests found targeting {target_input} in the last 24 hours.")
