@@ -29,7 +29,7 @@ with tab1:
         "Data Center & Gov": {"AS58224": "TIC Government", "AS43274": "ArvanCloud", "AS49100": "Afranet"}
     }
 
-    @st.cache_data(ttl=300)
+    @st.cache_data(ttl=1000)
     def fetch_bgp_data():
         results = []
         for category, asns in ASN_GROUPS.items():
@@ -147,7 +147,7 @@ with tab3:
             test_type = "tcp_connect" if mode == "Cloud IP Range (CIDR)" else "web_connectivity"
             
             # DIRECT CALL for AWS - No Proxy Wrapper
-            url = f"https://api.ooni.io/api/v1/measurements?probe_cc=IR&test_name={test_type}&limit=300"
+            url = f"https://api.ooni.io/api/v1/measurements?probe_cc=IR&test_name={test_type}&limit=1000"
             if mode == "Domain Name" and target != "All Recent Traffic":
                 url += f"&domain={target}"
 
