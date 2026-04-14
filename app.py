@@ -9,13 +9,32 @@ st.set_page_config(page_title="Filternet Intelligence", layout="wide")
 st.title("📡 Iran Filternet Intelligence Dashboard")
 st.markdown("Monitoring BGP Routing, Active Exposed IPs, and Live Traffic Anomalies.")
 
+import base64 # Add this to your imports at the very top!
+
 # --- SIDEBAR FOR API KEYS ---
 with st.sidebar:
     st.header("⚙️ Configuration")
-    shodan_api_key = st.text_input("Shodan API Key (For Tab 2)", type="password")
+    shodan_api_key = st.text_input("Shodan API Key (Tab 2)", type="password")
+    
     st.markdown("---")
-    st.markdown("**Data Sources:**\n* RIPEstat (BGP)\n* Shodan.io (Active IPs)\n* OONI.io (Traffic Measurements)")
+    fofa_email = st.text_input("FOFA Email (Tab 4)")
+    fofa_api_key = st.text_input("FOFA API Key (Tab 4)", type="password")
+    
+    st.markdown("---")
+    censys_api_id = st.text_input("Censys API ID (Tab 5)")
+    censys_api_secret = st.text_input("Censys Secret (Tab 5)", type="password")
+    
+    st.markdown("---")
+    st.markdown("**Data Sources:**\n* RIPEstat (BGP)\n* Shodan.io (Active IPs)\n* OONI.io (Traffic)\n* FOFA (Proxies)\n* Censys (Certificates)")
 
+# Create 5 Tabs now
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "🌐 BGP (Macro)", 
+    "🚗 Shodan (IPs)", 
+    "🎯 OONI (Traffic)", 
+    "🕵️ FOFA (Circumvention)", 
+    "🔐 Censys (Certs)"
+])
 # Create Tabs
 tab1, tab2, tab3 = st.tabs(["🌐 BGP Monitor (Macro)", "🚗 Active IPs (Shodan)", "🎯 Destinations (OONI)"])
 
@@ -215,3 +234,106 @@ with tab3:
         st.dataframe(filtered_df, use_container_width=True, hide_index=True)
     else:
         st.info(f"No recent volunteer tests found targeting {target_input} in the last 24 hours.")
+
+# ==========================================
+# TAB 4: FOFA (Circumvention & Proxy Hunter)
+# ==========================================
+with tab4:
+    st.subheader("🕵️ FOFA: Proxy & Panel Infrastructure Hunter")
+    st.write("Search for specific protocols or proxy management panels (like 3x-ui, X-UI, or VLESS) hosted inside Iran.")
+    
+    fofa_query = st.text_input("Enter FOFA Query (e.g., country=\"IR\" && title=\"3x-ui\"):", "country=\"IR\" && protocol=\"vless\"")
+    
+    if not fofa_email or not fofa_api_key:
+        st.warning("⚠️ Enter your FOFA Email and API Key in the sidebar.")
+    else:
+        @st.cache_data(ttl=3600)
+        def fetch_fofa_data(email, key, query):
+            try:
+                # FOFA requires the search query to be base64 encoded
+                qbase64 = base64.b64encode(query.encode('utf-8')).decode('utf-8')
+                url = f"https://fofa.info/api/v1/search/all?email={email}&key={key}&qbase64={qbase64}&size=100&fields=ip,port,protocol,title,asn,city"
+                
+                res = requests.get(url, timeout=15)
+                data = res.json()
+                
+                if data.get('error'):
+                    st.error(f"FOFA Error: {data.get('errmsg')}")
+                    return pd.DataFrame()
+                    
+                results = []
+                for item in data.get('results', []):
+                    # FOFA returns arrays matching the fields requested
+                    results.append({
+                        "IP Address": item[0],
+                        "Port": item[1],
+                        "Protocol": item[2],
+                        "Page Title": item[3],
+                        "ASN": item[4],
+                        "City": item[5]
+                    })
+                return pd.DataFrame(results)
+            except Exception as e:
+                st.error(f"Network Error reaching FOFA: {e}")
+                return pd.DataFrame()
+
+        with st.spinner("Scanning FOFA..."):
+            df_fofa = fetch_fofa_data(fofa_email, fofa_api_key, fofa_query)
+            
+        if not df_fofa.empty:
+            st.success(f"Found {len(df_fofa)} infrastructure nodes matching your query.")
+            st.dataframe(df_fofa, use_container_width=True, hide_index=True)
+
+
+# ==========================================
+# TAB 5: CENSYS (TLS/SSL Certificate Tracker)
+# ==========================================
+with tab5:
+    st.subheader("🔐 Censys: TLS/SSL Gateway Tracker")
+    st.write("Track the cryptographic footprint of secure gateways and VPNs by analyzing their TLS certificates.")
+    
+    censys_query = st.text_input("Enter Censys Query:", "location.country_code: IR and services.tls.certificates.leaf_data.issuer.organization: \"Let's Encrypt\"")
+    
+    if not censys_api_id or not censys_api_secret:
+        st.warning("⚠️ Enter your Censys API ID and Secret in the sidebar.")
+    else:
+        @st.cache_data(ttl=3600)
+        def fetch_censys_data(api_id, api_secret, query):
+            try:
+                url = "https://search.censys.io/api/v2/hosts/search"
+                headers = {"Accept": "application/json"}
+                # Censys uses HTTP Basic Auth
+                auth = (api_id, api_secret)
+                params = {"q": query, "per_page": 50}
+                
+                res = requests.get(url, headers=headers, auth=auth, params=params, timeout=15)
+                
+                if res.status_code != 200:
+                    st.error(f"Censys API Error {res.status_code}: {res.text}")
+                    return pd.DataFrame()
+                    
+                data = res.json()
+                results = []
+                
+                for hit in data.get('result', {}).get('hits', []):
+                    # Extract the first available service name for simplicity
+                    services = hit.get('services', [])
+                    service_name = services[0].get('service_name', 'Unknown') if services else 'Unknown'
+                    
+                    results.append({
+                        "IP Address": hit.get('ip'),
+                        "Routing Entity": hit.get('autonomous_system', {}).get('name', 'Unknown'),
+                        "Primary Service": service_name,
+                        "Last Updated": hit.get('last_updated_at')
+                    })
+                return pd.DataFrame(results)
+            except Exception as e:
+                st.error(f"Network Error reaching Censys: {e}")
+                return pd.DataFrame()
+
+        with st.spinner("Analyzing cryptographic footprints on Censys..."):
+            df_censys = fetch_censys_data(censys_api_id, censys_api_secret, censys_query)
+            
+        if not df_censys.empty:
+            st.success(f"Found {len(df_censys)} hosts matching your cryptographic query.")
+            st.dataframe(df_censys, use_container_width=True, hide_index=True)
